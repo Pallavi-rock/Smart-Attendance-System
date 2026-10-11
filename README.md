@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # React + TypeScript + Vite
 
 ## Secure admin setup
@@ -105,3 +106,6 @@ export default defineConfig([
 ])
 
 ```
+=======
+# Smart-Attendance-System
+>>>>>>> 476f9f5b2770fe9f23b815db1792295c25b8a5ea
