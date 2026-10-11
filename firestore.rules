@@ -1,0 +1,314 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------
+    // Helper functions
+    // ---------------------------------------------------------
+
+     function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return isSignedIn()
+        && userProfile().data.role == role;
+    }
+
+    function isStudent() {
+      return hasRole("student") && userProfile().data.status != "inactive";
+    }
+
+    function isTeacher() {
+      return hasRole("teacher") && userProfile().data.status != "inactive";
+    }
+
+    function isAdmin() {
+      return hasRole("admin") && userProfile().data.status != "inactive";
+    }
+
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/attendanceSessions/$(sessionId));
+    }
+
+    function attendanceAllowedForMethod(sessionData, method) {
+      return sessionData.attendanceMethod == "both" || sessionData.attendanceMethod == method;
+    }
+
+    function sessionNotExpired(sessionData) {
+      return sessionData.status == "active" && request.time < sessionData.endAt;
+    }
+
+    // ---------------------------------------------------------
+    // USERS
+    // ---------------------------------------------------------
+
+    match /users/{uid} {
+
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || isAdmin());
+
+      // A newly authenticated user may create only their own active student or
+      // teacher profile. Admin profiles are provisioned by the backend.
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          "uid",
+          "name",
+          "email",
+          "role",
+          "status",
+          "createdAt",
+          "department",
+          "semester",
+          "classId",
+          "employeeId",
+          "subjects"
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.role in ["student", "teacher"]
+        && request.resource.data.status == "active"
+        && request.resource.data.department is string
+        && (
+          (
+            request.resource.data.role == "student"
+            && request.resource.data.semester is string
+            && request.resource.data.classId is string
+          ) || (
+            request.resource.data.role == "teacher"
+            && request.resource.data.employeeId is string
+            && request.resource.data.subjects is string
+          )
+        )
+        && (!('semester' in request.resource.data) || request.resource.data.semester is string)
+        && (!('employeeId' in request.resource.data) || request.resource.data.employeeId is string)
+        && (!('subjects' in request.resource.data) || request.resource.data.subjects is string)
+        && request.resource.data.createdAt is timestamp;
+
+      // Admins may manage profiles, but the document ID, uid, and
+      // creation timestamp remain immutable.
+      allow update: if isAdmin()
+        && request.resource.data.keys().hasOnly([
+          "uid",
+          "name",
+          "email",
+          "role",
+          "status",
+          "createdAt",
+          "department",
+          "semester",
+          "classId",
+          "employeeId",
+          "subjects"
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.status == resource.data.status
+        && (!('department' in request.resource.data) || request.resource.data.department is string)
+        && (!('semester' in request.resource.data) || request.resource.data.semester is string)
+        && (!('employeeId' in request.resource.data) || request.resource.data.employeeId is string)
+        && (!('subjects' in request.resource.data) || request.resource.data.subjects is string)
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      // User deletion is a privileged backend operation, not a client action.
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // ATTENDANCE SESSIONS
+    // ---------------------------------------------------------
+
+    match /attendanceSessions/{sessionId} {
+
+      allow read: if isSignedIn()
+        && (
+          (
+            isStudent()
+            && resource.data.classId == userProfile().data.classId
+          )
+          || isAdmin()
+          || (
+            isTeacher()
+            && resource.data.teacherId == request.auth.uid
+          )
+        );
+
+      allow create: if (
+          (
+            isTeacher()
+            && request.resource.data.teacherId == request.auth.uid
+          ) || (
+            isAdmin()
+            && request.resource.data.teacherId is string
+            && get(
+              /databases/$(database)/documents/users/$(request.resource.data.teacherId)
+            ).data.role == "teacher"
+          )
+        )
+        && request.resource.data.keys().hasOnly([
+          "teacherId",
+          "subject",
+          "classId",
+          "attendanceCode",
+          "attendanceMethod",
+          "qrSessionToken",
+          "status",
+          "sessionDate",
+          "startTime",
+          "endTime",
+          "startAt",
+          "endAt",
+          "durationMinutes",
+          "createdAt",
+          "location"
+        ])
+        && request.resource.data.subject is string
+        && request.resource.data.classId is string
+        && request.resource.data.attendanceCode is string
+        && request.resource.data.attendanceMethod in ["qr", "code", "both"]
+        && request.resource.data.status in ["created", "active"]
+        && request.resource.data.sessionDate is string
+        && request.resource.data.startTime is string
+        && request.resource.data.endTime is string
+        && request.resource.data.startAt is timestamp
+        && request.resource.data.endAt is timestamp
+        && request.resource.data.startAt <= request.resource.data.endAt
+        && request.resource.data.durationMinutes is number
+        && request.resource.data.durationMinutes > 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.location.latitude is number
+        && request.resource.data.location.longitude is number
+        && request.resource.data.qrSessionToken is string;
+
+      allow update: if (
+          (
+            isTeacher()
+            && resource.data.teacherId == request.auth.uid
+          ) || isAdmin()
+        )
+        && request.resource.data.keys().hasOnly([
+          "teacherId",
+          "subject",
+          "classId",
+          "attendanceCode",
+          "attendanceMethod",
+          "qrSessionToken",
+          "status",
+          "sessionDate",
+          "startTime",
+          "endTime",
+          "startAt",
+          "endAt",
+          "durationMinutes",
+          "createdAt"
+        ])
+        && request.resource.data.teacherId == resource.data.teacherId
+        && request.resource.data.subject is string
+        && request.resource.data.classId is string
+        && request.resource.data.attendanceCode is string
+        && request.resource.data.attendanceMethod in ["qr", "code", "both"]
+        && request.resource.data.status in ["created", "active", "ended", "expired"]
+        && request.resource.data.sessionDate is string
+        && request.resource.data.startTime is string
+        && request.resource.data.endTime is string
+        && request.resource.data.startAt is timestamp
+        && request.resource.data.endAt is timestamp
+        && request.resource.data.durationMinutes is number
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          request.resource.data.attendanceMethod != "code"
+          || request.resource.data.attendanceCode.size() >= 1
+        )
+        && (
+          request.resource.data.attendanceMethod != "qr"
+          || request.resource.data.qrSessionToken is string
+        );
+
+      allow delete: if isAdmin()
+        || (isTeacher() && resource.data.teacherId == request.auth.uid);
+    }
+
+    match /attendanceSessionSecrets/{sessionId} {
+      allow read: if isSignedIn()
+        && isTeacher()
+        && get(/databases/$(database)/documents/attendanceSessions/$(sessionId)).data.teacherId == request.auth.uid;
+      allow create: if isTeacher()
+        && get(/databases/$(database)/documents/attendanceSessions/$(sessionId)).data.teacherId == request.auth.uid
+        && request.resource.data.keys().hasOnly(["attendanceCode", "qrSessionToken"])
+        && request.resource.data.attendanceCode is string
+        && request.resource.data.qrSessionToken is string;
+      allow update, delete: if false;
+    }
+
+
+    // ---------------------------------------------------------
+    // ATTENDANCE RECORDS
+    // ---------------------------------------------------------
+
+    match /attendanceRecords/{recordId} {
+
+      allow read: if isSignedIn()
+        && (
+          isAdmin()
+          || (
+            isStudent()
+            && resource.data.studentId == request.auth.uid
+          )
+          || (
+            isTeacher()
+            && get(
+              /databases/$(database)/documents/attendanceSessions/$(resource.data.sessionId)
+            ).data.teacherId == request.auth.uid
+          )
+        );
+
+      allow create: if isSignedIn()
+        && isStudent()
+        && !exists(/databases/$(database)/documents/attendanceRecords/$(recordId))
+        && request.resource.data.keys().hasOnly([
+          "sessionId",
+          "studentId",
+          "studentName",
+          "subject",
+          "attendanceMethod",
+          "status",
+          "markedAt"
+        ])
+        && request.resource.data.sessionId is string
+        && request.resource.data.studentId == request.auth.uid
+        && recordId == request.resource.data.sessionId + "_" + request.resource.data.studentId
+        && exists(
+          /databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)
+        )
+        && let session = get(/databases/$(database)/documents/attendanceSessions/$(request.resource.data.sessionId)).data
+        && session.status == "active"
+        && request.time < session.endAt
+        && request.time >= session.startAt
+        && userProfile().data.classId == session.classId
+        && attendanceAllowedForMethod(session, request.resource.data.attendanceMethod)
+        && request.resource.data.studentName == userProfile().data.name
+        && request.resource.data.subject == session.subject
+        && request.resource.data.status == "present"
+        && request.resource.data.attendanceMethod in ["qr", "code", "both"]
+        && request.resource.data.markedAt == request.time;
+
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+  }
+}
